@@ -315,7 +315,7 @@ class BipedPF(BaseTask):
             heightmap_data = self.measured_heights
         else:
             # Fallback to zeros if no heightmap available
-            heightmap_data = torch.zeros((self.num_envs, 81), device=self.device, dtype=self.obs_buf.dtype)
+            heightmap_data = torch.zeros((self.num_envs, 81), device=self.device, dtype=torch.float32)
         
         critic_obs_buf = torch.cat((
             self.base_lin_vel * self.obs_scales.lin_vel, self.obs_buf, heightmap_data), dim=-1)
