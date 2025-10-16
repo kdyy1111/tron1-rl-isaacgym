@@ -265,8 +265,8 @@ class BipedPF(BaseTask):
         self.envs_steps_buf[env_ids] = 0
         self.reset_buf[env_ids] = 1
         self.obs_history[env_ids] = 0
-        obs_buf, _ = self.compute_group_observations()
-        self.obs_history[env_ids] = obs_buf[env_ids].repeat(1, self.obs_history_length)
+        # Initialize obs_history with zeros during reset
+        self.obs_history[env_ids] = torch.zeros((len(env_ids), self.num_obs * self.obs_history_length), device=self.device, dtype=torch.float32)
         self.gait_indices[env_ids] = 0
         self.fail_buf[env_ids] = 0
         self.action_fifo[env_ids] = 0
@@ -309,10 +309,20 @@ class BipedPF(BaseTask):
             ),
             dim=-1,
         )
-        # Add placeholder for heightmap data (16 dimensions) to match network expectations
-        heightmap_placeholder = torch.zeros((self.num_envs, 16), device=self.device, dtype=self.obs_buf.dtype)
+        # Add raw heightmap data (81 dimensions) directly to critic observations
+        if hasattr(self, 'measured_heights') and self.measured_heights is not None:
+            heightmap_data = self.measured_heights
+        else:
+            heightmap_data = torch.zeros((self.num_envs, 81), device=self.device, dtype=torch.float32)
+        
+        # Safe access to base_lin_vel and obs_scales
+        if hasattr(self, 'base_lin_vel') and hasattr(self, 'obs_scales') and hasattr(self.obs_scales, 'lin_vel'):
+            base_lin_vel_scaled = self.base_lin_vel * self.obs_scales.lin_vel
+        else:
+            base_lin_vel_scaled = torch.zeros((self.num_envs, 3), device=self.device, dtype=torch.float32)
+        
         critic_obs_buf = torch.cat((
-            self.base_lin_vel * self.obs_scales.lin_vel, self.obs_buf, heightmap_placeholder), dim=-1)
+            base_lin_vel_scaled, obs_buf, heightmap_data), dim=-1)
         return obs_buf, critic_obs_buf
     
     # --------------------------- reward functions---------------------------

@@ -84,6 +84,8 @@ class PPO:
 
         self.encoder = encoder
         self.heightmap_encoder = heightmap_encoder
+        self.current_heightmaps = None  # Store current noisy heightmaps
+        self.current_gt_heightmaps = None  # Store current GT heightmaps
 
         # PPO components
         self.actor_critic = actor_critic
@@ -143,35 +145,47 @@ class PPO:
     def train_mode(self):
         self.actor_critic.train()
 
-    def act(self, obs, obs_history, commands, critic_obs, gt_heightmap=None):
+    def act(self, obs, obs_history, commands, critic_obs, heightmap=None, gt_heightmap=None):
         critic_obs = torch.cat((critic_obs, commands), dim=-1)
         # act
         encoder_out = self.encoder.encode(obs_history)
         
+        # Store heightmaps for different purposes
+        self.current_heightmaps = heightmap  # Noisy heightmap for actor
+        self.current_gt_heightmaps = gt_heightmap  # GT heightmap for critic
         
-        # Actor no longer uses heightmap - removed noisy heightmap input
-        actor_input = torch.cat((encoder_out, obs, commands), dim=-1)
+        # Encode noisy heightmap for actor; if missing, use zeros to keep input dim consistent
+        if self.heightmap_encoder.num_output_dim > 0:
+            if heightmap is not None:
+                heightmap_encoded = self.heightmap_encoder.encode(heightmap)
+            else:
+                heightmap_encoded = torch.zeros(
+                    (obs.shape[0], self.heightmap_encoder.num_output_dim), device=self.device, dtype=obs.dtype
+                )
+            actor_input = torch.cat((encoder_out, obs, commands, heightmap_encoded), dim=-1)
+        else:
+            # No heightmap encoder - original behavior
+            actor_input = torch.cat((encoder_out, obs, commands), dim=-1)
             
         self.transition.actions = self.actor_critic.act(actor_input).detach()
 
-        # evaluate with GT heightmap for critic only
+        # evaluate with GT heightmap for critic
         if self.critic_take_latent:
             if self.heightmap_encoder.num_output_dim > 0:
-                if gt_heightmap is not None:
-                    # Only use GT heightmap for critic privileged information
+                if gt_heightmap is not None and getattr(self, 'critic_use_gt_heightmap', True):
                     gt_heightmap_encoded = self.heightmap_encoder.encode(gt_heightmap)
                     critic_latent = gt_heightmap_encoded
+                elif heightmap is not None:
+                    critic_latent = self.heightmap_encoder.encode(heightmap)
                 else:
                     critic_latent = torch.zeros(
                         (critic_obs.shape[0], self.heightmap_encoder.num_output_dim), device=self.device, dtype=critic_obs.dtype
                     )
                 critic_obs = torch.cat((critic_obs, encoder_out, critic_latent), dim=-1)
             else:
-                # No heightmap encoder - just use MLP encoder
+                # Heightmap encoder disabled - critic_obs already contains heightmap from environment
+                # Just add encoder output
                 critic_obs = torch.cat((critic_obs, encoder_out), dim=-1)
-        else:
-            # If critic_take_latent is False, don't add encoder outputs
-            pass
         self.transition.values = self.actor_critic.evaluate(critic_obs).detach()
 
         # storage
@@ -234,11 +248,22 @@ class PPO:
             encoder_out_batch = self.encoder.encode(obs_history_batch)
             commands_batch = group_commands_batch
             
-            # Actor no longer uses heightmap - removed from actor input
-            actor_input_batch = torch.cat(
-                (encoder_out_batch, obs_batch, commands_batch),
-                dim=-1,
-            )
+            # Add heightmap encoding for actor (use zeros since heightmap is not available in update)
+            if self.heightmap_encoder.num_output_dim > 0:
+                heightmap_encoded_batch = torch.zeros(
+                    (obs_batch.shape[0], self.heightmap_encoder.num_output_dim), 
+                    device=self.device, dtype=obs_batch.dtype
+                )
+                actor_input_batch = torch.cat(
+                    (encoder_out_batch, obs_batch, commands_batch, heightmap_encoded_batch),
+                    dim=-1,
+                )
+            else:
+                # No heightmap encoder - original behavior
+                actor_input_batch = torch.cat(
+                    (encoder_out_batch, obs_batch, commands_batch),
+                    dim=-1,
+                )
             
             self.actor_critic.act(actor_input_batch)
 
@@ -330,6 +355,7 @@ class PPO:
 
         num_updates_extra = 0
         mean_mlp_loss = 0
+        mean_heightmap_loss = 0
         if self.extra_optimizer is not None:
             generator = self.storage.encoder_mini_batch_generator(
                 self.num_mini_batches, self.num_learning_epochs
@@ -348,20 +374,48 @@ class PPO:
                         (encode_batch[:, 0:3] - critic_obs_batch[:, 0:3]).pow(2).mean()
                     )
                 
-                # Combine losses for encoder training
-                extra_loss = mlp_loss
+                # MLP Encoder 학습 (단독)
+                if mlp_loss.item() > 0:
+                    self.extra_optimizer.zero_grad()
+                    mlp_loss.backward()
+                    if hasattr(self.encoder, 'parameters'):
+                        nn.utils.clip_grad_norm_(self.encoder.parameters(), self.max_grad_norm)
+                    self.extra_optimizer.step()
 
-                self.extra_optimizer.zero_grad()
-                extra_loss.backward()
-                # Add gradient clipping for encoder stability
-                if hasattr(self.encoder, 'parameters'):
-                    nn.utils.clip_grad_norm_(self.encoder.parameters(), self.max_grad_norm)
-                if hasattr(self.heightmap_encoder, 'parameters'):
-                    nn.utils.clip_grad_norm_(self.heightmap_encoder.parameters(), self.max_grad_norm)
-                self.extra_optimizer.step()
+                # Heightmap Encoder loss: noisy vs GT compressed output (단독)
+                heightmap_loss = torch.tensor(0.0, device=self.device)
+                if (self.heightmap_encoder.num_output_dim > 0 and 
+                    hasattr(self, 'current_heightmaps') and 
+                    hasattr(self, 'current_gt_heightmaps') and
+                    self.current_heightmaps is not None and 
+                    self.current_gt_heightmaps is not None):
+                    # Sample a subset for memory efficiency
+                    batch_size = min(self.current_heightmaps.shape[0], 256)
+                    if self.current_heightmaps.shape[0] > batch_size:
+                        indices = torch.randperm(self.current_heightmaps.shape[0])[:batch_size]
+                        noisy_sample = self.current_heightmaps[indices]
+                        gt_sample = self.current_gt_heightmaps[indices]
+                    else:
+                        noisy_sample = self.current_heightmaps
+                        gt_sample = self.current_gt_heightmaps
+                    
+                    # Encode both noisy and GT heightmaps
+                    noisy_encoded = self.heightmap_encoder.encode(noisy_sample)
+                    gt_encoded = self.heightmap_encoder.encode(gt_sample)
+                    
+                    # Compute MSE loss between compressed representations
+                    heightmap_loss = nn.functional.mse_loss(noisy_encoded, gt_encoded)
+                    
+                    # Heightmap Encoder 학습 (단독)
+                    self.extra_optimizer.zero_grad()
+                    heightmap_loss.backward()
+                    if hasattr(self.heightmap_encoder, 'parameters'):
+                        nn.utils.clip_grad_norm_(self.heightmap_encoder.parameters(), self.max_grad_norm)
+                    self.extra_optimizer.step()
 
                 num_updates_extra += 1
                 mean_mlp_loss += mlp_loss.item()
+                mean_heightmap_loss += heightmap_loss.item()
 
         # Prevent division by zero
         if num_updates > 0:
@@ -376,9 +430,11 @@ class PPO:
             
         if num_updates_extra > 0:
             mean_mlp_loss /= num_updates_extra
+            mean_heightmap_loss /= num_updates_extra
         else:
             mean_mlp_loss = 0.0
+            mean_heightmap_loss = 0.0
             
         self.storage.clear()
 
-        return (mean_value_loss, mean_mlp_loss, mean_surrogate_loss, mean_kl)
+        return (mean_value_loss, mean_mlp_loss, mean_heightmap_loss, mean_surrogate_loss, mean_kl)

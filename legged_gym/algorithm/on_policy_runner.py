@@ -238,6 +238,7 @@ class OnPolicyRunner:
             (
                 mean_value_loss,
                 mean_mlp_loss,
+                mean_heightmap_loss,
                 mean_surrogate_loss,
                 mean_kl,
             ) = self.alg.update()
@@ -288,6 +289,7 @@ class OnPolicyRunner:
             "Loss/value_function", locs["mean_value_loss"], locs["it"]
         )
         self.writer.add_scalar("Loss/mlp_encoder", locs["mean_mlp_loss"], locs["it"])
+        self.writer.add_scalar("Loss/heightmap_encoder", locs["mean_heightmap_loss"], locs["it"])
         self.writer.add_scalar(
             "Loss/surrogate", locs["mean_surrogate_loss"], locs["it"]
         )
