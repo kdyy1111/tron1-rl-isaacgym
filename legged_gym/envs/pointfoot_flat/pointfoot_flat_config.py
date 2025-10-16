@@ -37,7 +37,7 @@ class BipedCfgPF(BaseConfig):
     class env:
         num_envs = 8192
         num_observations = 30  # Base observations (actual actor input: 30+3+3=36 with encoders, no heightmap)
-        num_critic_observations = 3 + num_observations + 81  # Base critic obs: base_lin_vel(3) + obs_buf(30) + raw_heightmap(81) = 114
+        num_critic_observations = 3 + num_observations + 16  # Base critic obs: base_lin_vel(3) + obs_buf(30) + heightmap_placeholder(16) = 49
         num_height_samples = 81
         num_actions = 6
         env_spacing = 3.0  # not used with heightfields/trimeshes
@@ -339,11 +339,11 @@ class BipedCfgPPOPF(BaseConfig):
     class Heightmap_Encoder:
         output_detach = True  # Keep original design - independent encoder learning
         num_input_dim = 81  # Use reduced measured_points (9x9=81) from base_task
-        num_output_dim = 0  # Disabled - use raw heightmap directly
+        num_output_dim = 16  # Increased for better GT heightmap compression
         hidden_dims = [256, 128]  # Network for GT heightmap compression
         activation = "elu"
         orthogonal_init = False
-        # Note: Encoder disabled - raw 81-dim heightmap will be used directly
+        # Note: This encoder now only processes GT heightmap for critic privileged information
         # No noise parameters needed since we only use clean GT data
 
     class policy:

@@ -309,16 +309,10 @@ class BipedPF(BaseTask):
             ),
             dim=-1,
         )
-        # Add raw heightmap data (81 dimensions) directly to critic observations
-        if hasattr(self, 'measured_heights') and self.measured_heights is not None:
-            # Use actual measured heightmap data
-            heightmap_data = self.measured_heights
-        else:
-            # Fallback to zeros if no heightmap available
-            heightmap_data = torch.zeros((self.num_envs, 81), device=self.device, dtype=torch.float32)
-        
+        # Add placeholder for heightmap data (16 dimensions) to match network expectations
+        heightmap_placeholder = torch.zeros((self.num_envs, 16), device=self.device, dtype=self.obs_buf.dtype)
         critic_obs_buf = torch.cat((
-            self.base_lin_vel * self.obs_scales.lin_vel, self.obs_buf, heightmap_data), dim=-1)
+            self.base_lin_vel * self.obs_scales.lin_vel, self.obs_buf, heightmap_placeholder), dim=-1)
         return obs_buf, critic_obs_buf
     
     # --------------------------- reward functions---------------------------

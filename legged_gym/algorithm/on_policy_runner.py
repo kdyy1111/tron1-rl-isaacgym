@@ -154,7 +154,8 @@ class OnPolicyRunner:
             commands.to(self.device),
             critic_obs.to(self.device),
         )
-        # Heightmap is now included directly in critic_obs from environment
+        # Initialize GT heightmap for critic privileged information
+        gt_heightmap = self.env.get_gt_heightmap() if hasattr(self.env, 'get_gt_heightmap') else None
         # ???
         self.alg.actor_critic.train()  # switch to train mode (for dropout for example)
 
@@ -174,9 +175,11 @@ class OnPolicyRunner:
             # Rollout
             with torch.inference_mode():
                 for i in range(self.num_steps_per_env):
-                    actions = self.alg.act(obs, obs_history, commands, critic_obs)
+                    actions = self.alg.act(obs, obs_history, commands, critic_obs, gt_heightmap)
                     # add critic_obs_buf to step returns, make sure it updates in every for loop
                     (obs, rewards, dones, infos, obs_history, commands, critic_obs_buf) = self.env.step(actions)
+                    # Get GT heightmap separately for critic privileged information
+                    gt_heightmap = self.env.get_gt_heightmap() if hasattr(self.env, 'get_gt_heightmap') else None
                     # critic_obs = obs
                     obs, obs_history, commands, critic_obs, rewards, dones = (
                         obs.to(self.device),

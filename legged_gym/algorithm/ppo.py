@@ -143,7 +143,7 @@ class PPO:
     def train_mode(self):
         self.actor_critic.train()
 
-    def act(self, obs, obs_history, commands, critic_obs):
+    def act(self, obs, obs_history, commands, critic_obs, gt_heightmap=None):
         critic_obs = torch.cat((critic_obs, commands), dim=-1)
         # act
         encoder_out = self.encoder.encode(obs_history)
@@ -154,18 +154,20 @@ class PPO:
             
         self.transition.actions = self.actor_critic.act(actor_input).detach()
 
-        # evaluate with heightmap for critic only
+        # evaluate with GT heightmap for critic only
         if self.critic_take_latent:
             if self.heightmap_encoder.num_output_dim > 0:
-                # Heightmap encoder enabled - extract heightmap from critic_obs and encode
-                # critic_obs contains: base_lin_vel(3) + obs_buf(30) + heightmap(81) = 114
-                heightmap_from_obs = critic_obs[:, -81:]  # Extract last 81 dimensions (heightmap)
-                gt_heightmap_encoded = self.heightmap_encoder.encode(heightmap_from_obs)
-                critic_obs = torch.cat((critic_obs, encoder_out, gt_heightmap_encoded), dim=-1)
+                if gt_heightmap is not None:
+                    # Only use GT heightmap for critic privileged information
+                    gt_heightmap_encoded = self.heightmap_encoder.encode(gt_heightmap)
+                    critic_latent = gt_heightmap_encoded
+                else:
+                    critic_latent = torch.zeros(
+                        (critic_obs.shape[0], self.heightmap_encoder.num_output_dim), device=self.device, dtype=critic_obs.dtype
+                    )
+                critic_obs = torch.cat((critic_obs, encoder_out, critic_latent), dim=-1)
             else:
-                # Heightmap encoder disabled - use raw heightmap directly
-                # critic_obs already contains: base_lin_vel(3) + obs_buf(30) + heightmap(81) = 114
-                # Just add encoder output
+                # No heightmap encoder - just use MLP encoder
                 critic_obs = torch.cat((critic_obs, encoder_out), dim=-1)
         else:
             # If critic_take_latent is False, don't add encoder outputs
