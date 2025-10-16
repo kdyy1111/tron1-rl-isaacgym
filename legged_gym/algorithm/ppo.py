@@ -33,6 +33,7 @@ import torch.nn as nn
 import torch.optim as optim
 
 from .mlp_encoder import MLP_Encoder
+from .heightmap_encoder import HeightmapEncoder
 from .actor_critic import ActorCritic
 from .rollout_storage import RolloutStorage
 
@@ -40,11 +41,13 @@ from .rollout_storage import RolloutStorage
 class PPO:
     actor_critic: ActorCritic
     encoder: MLP_Encoder
+    heightmap_encoder: HeightmapEncoder
 
     def __init__(
         self,
         num_group,
         encoder,
+        heightmap_encoder,
         actor_critic,
         num_learning_epochs=1,
         num_mini_batches=1,
@@ -65,6 +68,7 @@ class PPO:
         early_stop=False,
         anneal_lr=False,
         device="cpu",
+        **kwargs,
     ):
         self.device = device
         self.num_group = num_group
@@ -76,8 +80,10 @@ class PPO:
         self.anneal_lr = anneal_lr
         self.vae_beta = vae_beta
         self.critic_take_latent = critic_take_latent
+        self.critic_use_gt_heightmap = kwargs.get('critic_use_gt_heightmap', True)
 
         self.encoder = encoder
+        self.heightmap_encoder = heightmap_encoder
 
         # PPO components
         self.actor_critic = actor_critic
@@ -85,12 +91,18 @@ class PPO:
         self.storage = None  # initialized later
         self.optimizer = optim.Adam([{"params": self.actor_critic.parameters()}], lr=learning_rate)
 
+        # Setup optimizers for encoders
+        encoder_params = []
         if self.encoder.num_output_dim != 0:
-            self.extra_optimizer = optim.Adam(
-                self.encoder.parameters(), lr=est_learning_rate
-            )
+            encoder_params.extend(self.encoder.parameters())
+        if self.heightmap_encoder.num_output_dim != 0:
+            encoder_params.extend(self.heightmap_encoder.parameters())
+        
+        if encoder_params:
+            self.extra_optimizer = optim.Adam(encoder_params, lr=est_learning_rate)
         else:
             self.extra_optimizer = None
+            
         self.transition = RolloutStorage.Transition()
 
         # PPO parameters
@@ -135,13 +147,29 @@ class PPO:
         critic_obs = torch.cat((critic_obs, commands), dim=-1)
         # act
         encoder_out = self.encoder.encode(obs_history)
-        self.transition.actions = self.actor_critic.act(
-            torch.cat((encoder_out, obs, commands), dim=-1)
-        ).detach()
+        
+        
+        # Actor no longer uses heightmap - removed noisy heightmap input
+        actor_input = torch.cat((encoder_out, obs, commands), dim=-1)
+            
+        self.transition.actions = self.actor_critic.act(actor_input).detach()
 
-        # evaluate
+        # evaluate with heightmap for critic only
         if self.critic_take_latent:
-            critic_obs = torch.cat((critic_obs, encoder_out), dim=-1)
+            if self.heightmap_encoder.num_output_dim > 0:
+                # Heightmap encoder enabled - extract heightmap from critic_obs and encode
+                # critic_obs contains: base_lin_vel(3) + obs_buf(30) + heightmap(81) = 114
+                heightmap_from_obs = critic_obs[:, -81:]  # Extract last 81 dimensions (heightmap)
+                gt_heightmap_encoded = self.heightmap_encoder.encode(heightmap_from_obs)
+                critic_obs = torch.cat((critic_obs, encoder_out, gt_heightmap_encoded), dim=-1)
+            else:
+                # Heightmap encoder disabled - use raw heightmap directly
+                # critic_obs already contains: base_lin_vel(3) + obs_buf(30) + heightmap(81) = 114
+                # Just add encoder output
+                critic_obs = torch.cat((critic_obs, encoder_out), dim=-1)
+        else:
+            # If critic_take_latent is False, don't add encoder outputs
+            pass
         self.transition.values = self.actor_critic.evaluate(critic_obs).detach()
 
         # storage
@@ -203,12 +231,14 @@ class PPO:
         ) in generator:
             encoder_out_batch = self.encoder.encode(obs_history_batch)
             commands_batch = group_commands_batch
-            self.actor_critic.act(
-                torch.cat(
-                    (encoder_out_batch, obs_batch, commands_batch),
-                    dim=-1,
-                )
+            
+            # Actor no longer uses heightmap - removed from actor input
+            actor_input_batch = torch.cat(
+                (encoder_out_batch, obs_batch, commands_batch),
+                dim=-1,
             )
+            
+            self.actor_critic.act(actor_input_batch)
 
             actions_log_prob_batch = self.actor_critic.get_actions_log_prob(
                 actions_batch
@@ -287,6 +317,7 @@ class PPO:
             # Gradient step
             self.optimizer.zero_grad()
             loss.backward()
+            
             nn.utils.clip_grad_norm_(self.actor_critic.parameters(), self.max_grad_norm)
             self.optimizer.step()
 
@@ -296,7 +327,7 @@ class PPO:
             mean_kl += kl_mean.item()
 
         num_updates_extra = 0
-        mean_extra_loss = 0
+        mean_mlp_loss = 0
         if self.extra_optimizer is not None:
             generator = self.storage.encoder_mini_batch_generator(
                 self.num_mini_batches, self.num_learning_epochs
@@ -306,29 +337,46 @@ class PPO:
                 critic_obs_batch,
                 obs_history_batch,
             ) in generator:
+                # MLP Encoder loss
+                mlp_loss = torch.tensor(0.0, device=self.device)
                 if self.encoder.is_mlp_encoder:
                     self.encoder.encode(obs_history_batch)
                     encode_batch = self.encoder.get_encoder_out()
-
-                if self.encoder.is_mlp_encoder:
-                    extra_loss = (
+                    mlp_loss = (
                         (encode_batch[:, 0:3] - critic_obs_batch[:, 0:3]).pow(2).mean()
                     )
-                else:
-                    extra_loss = torch.zeros_like(value_loss)
+                
+                # Combine losses for encoder training
+                extra_loss = mlp_loss
 
                 self.extra_optimizer.zero_grad()
                 extra_loss.backward()
+                # Add gradient clipping for encoder stability
+                if hasattr(self.encoder, 'parameters'):
+                    nn.utils.clip_grad_norm_(self.encoder.parameters(), self.max_grad_norm)
+                if hasattr(self.heightmap_encoder, 'parameters'):
+                    nn.utils.clip_grad_norm_(self.heightmap_encoder.parameters(), self.max_grad_norm)
                 self.extra_optimizer.step()
 
                 num_updates_extra += 1
-                mean_extra_loss += extra_loss.item()
+                mean_mlp_loss += mlp_loss.item()
 
-        mean_value_loss /= num_updates
+        # Prevent division by zero
+        if num_updates > 0:
+            mean_value_loss /= num_updates
+            mean_surrogate_loss /= num_updates
+            mean_kl /= num_updates
+        else:
+            print("Warning: No PPO updates performed due to early stopping")
+            mean_value_loss = 0.0
+            mean_surrogate_loss = 0.0
+            mean_kl = 0.0
+            
         if num_updates_extra > 0:
-            mean_extra_loss /= num_updates
-        mean_surrogate_loss /= num_updates
-        mean_kl /= num_updates
+            mean_mlp_loss /= num_updates_extra
+        else:
+            mean_mlp_loss = 0.0
+            
         self.storage.clear()
 
-        return (mean_value_loss, mean_extra_loss, mean_surrogate_loss, mean_kl)
+        return (mean_value_loss, mean_mlp_loss, mean_surrogate_loss, mean_kl)

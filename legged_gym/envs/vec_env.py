@@ -45,7 +45,7 @@ class VecEnv(ABC):
     extras: dict
     device: torch.device
     @abstractmethod
-    def step(self, actions: torch.Tensor) -> Tuple[torch.Tensor, Union[torch.Tensor, None], torch.Tensor, torch.Tensor, dict]:
+    def step(self, actions: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, dict, torch.Tensor, torch.Tensor, torch.Tensor]:
         pass
     @abstractmethod
     def reset(self, env_ids: Union[list, torch.Tensor]):

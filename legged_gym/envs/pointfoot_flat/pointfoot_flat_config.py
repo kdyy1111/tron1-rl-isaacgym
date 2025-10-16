@@ -36,9 +36,9 @@ robot_type = os.getenv("ROBOT_TYPE")
 class BipedCfgPF(BaseConfig):
     class env:
         num_envs = 8192
-        num_observations = 30
-        num_critic_observations = 3 + num_observations
-        num_height_samples = 117
+        num_observations = 30  # Base observations (actual actor input: 30+3+3=36 with encoders, no heightmap)
+        num_critic_observations = 3 + num_observations + 81  # Base critic obs: base_lin_vel(3) + obs_buf(30) + raw_heightmap(81) = 114
+        num_height_samples = 81
         num_actions = 6
         env_spacing = 3.0  # not used with heightfields/trimeshes
         send_timeouts = True  # send time out information to the algorithm
@@ -48,7 +48,7 @@ class BipedCfgPF(BaseConfig):
         fail_to_terminal_time_s = 0.5
 
     class terrain:
-        mesh_type = "plane"  # "heightfield" # none, plane, heightfield or trimesh
+        mesh_type = "trimesh"  # "heightfield" # none, plane, heightfield or trimesh
         horizontal_scale = 0.1  # [m]
         vertical_scale = 0.005  # [m]
         border_size = 25  # [m]
@@ -57,11 +57,9 @@ class BipedCfgPF(BaseConfig):
         dynamic_friction = 0.4
         restitution = 0.8
         # rough terrain only:
-        measure_heights = False
+        measure_heights = True  # Enable heightmap measurement for heightmap encoder
         critic_measure_heights = True
         measured_points_x = [
-            -0.6,
-            -0.5,
             -0.4,
             -0.3,
             -0.2,
@@ -71,9 +69,7 @@ class BipedCfgPF(BaseConfig):
             0.2,
             0.3,
             0.4,
-            0.5,
-            0.6,
-        ]  # 1mx1.6m rectangle (without center line)
+        ]  # Reduced by removing front/back 2 points each (9 points total)
         measured_points_y = [-0.4, -0.3, -0.2, -0.1, 0.0, 0.1, 0.2, 0.3, 0.4]
         selected = False  # select a unique terrain type and pass all arguments
         terrain_kwargs = None  # Dict of arguments for selected terrain
@@ -340,6 +336,16 @@ class BipedCfgPPOPF(BaseConfig):
         activation = "elu"
         orthogonal_init = False
 
+    class Heightmap_Encoder:
+        output_detach = True  # Keep original design - independent encoder learning
+        num_input_dim = 81  # Use reduced measured_points (9x9=81) from base_task
+        num_output_dim = 0  # Disabled - use raw heightmap directly
+        hidden_dims = [256, 128]  # Network for GT heightmap compression
+        activation = "elu"
+        orthogonal_init = False
+        # Note: Encoder disabled - raw 81-dim heightmap will be used directly
+        # No noise parameters needed since we only use clean GT data
+
     class policy:
         init_noise_std = 1.0
         actor_hidden_dims = [512, 256, 128]
@@ -365,17 +371,19 @@ class BipedCfgPPOPF(BaseConfig):
         # Extra training params
         est_learning_rate = 1.0e-3
         ts_learning_rate = 1.0e-4
-        critic_take_latent = True
+        critic_take_latent = True  # Use latent features for critic
+        critic_use_gt_heightmap = True  # Use GT heightmap for critic privileged information
 
     class runner:
         encoder_class_name = "MLP_Encoder"
+        heightmap_encoder_class_name = "Heightmap_Encoder"
         policy_class_name = "ActorCritic"
         algorithm_class_name = "PPO"
         num_steps_per_env = 24  # per iteration
         max_iterations = 15000  # number of policy updates
 
         # logging
-        logger = "tensorboard"
+        logger = "wandb"
         exptid = ""
         wandb_project = "legged_gym_PF"
         save_interval = 500  # check for potential saves every this many iterations

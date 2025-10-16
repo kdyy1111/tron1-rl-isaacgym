@@ -12,8 +12,10 @@ from legged_gym.envs.base.base_task import BaseTask
 from legged_gym.utils.terrain import Terrain
 from legged_gym.utils.helpers import class_to_dict
 from legged_gym.utils.math import (
+    quat_apply,
     quat_apply_yaw,
     wrap_to_pi,
+    torch_rand_float,
     torch_rand_sqrt_float,
 )
 from .pointfoot_flat_config import BipedCfgPF
@@ -90,6 +92,7 @@ class BipedPF(BaseTask):
         # return clipped obs, clipped states (None), rewards, dones and infos
         clip_obs = self.cfg.normalization.clip_observations
         self.obs_buf = torch.clip(self.obs_buf, -clip_obs, clip_obs)
+        
         return (
             self.obs_buf,
             self.rew_buf,
@@ -99,6 +102,12 @@ class BipedPF(BaseTask):
             self.commands[:, :3] * self.commands_scale,
             self.critic_obs_buf # make sure critic_obs update in every for loop
         )
+    
+    def get_gt_heightmap(self):
+        """Get GT heightmap data for critic only (privileged information)"""
+        if hasattr(self, 'measured_heights') and self.measured_heights is not None:
+            return self.measured_heights.clone()
+        return None
 
     def _resample_commands(self, env_ids):
         """Randommly select commands of some environments
@@ -300,8 +309,16 @@ class BipedPF(BaseTask):
             ),
             dim=-1,
         )
+        # Add raw heightmap data (81 dimensions) directly to critic observations
+        if hasattr(self, 'measured_heights') and self.measured_heights is not None:
+            # Use actual measured heightmap data
+            heightmap_data = self.measured_heights
+        else:
+            # Fallback to zeros if no heightmap available
+            heightmap_data = torch.zeros((self.num_envs, 81), device=self.device, dtype=self.obs_buf.dtype)
+        
         critic_obs_buf = torch.cat((
-            self.base_lin_vel * self.obs_scales.lin_vel, self.obs_buf), dim=-1)
+            self.base_lin_vel * self.obs_scales.lin_vel, self.obs_buf, heightmap_data), dim=-1)
         return obs_buf, critic_obs_buf
     
     # --------------------------- reward functions---------------------------

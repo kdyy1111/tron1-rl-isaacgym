@@ -148,11 +148,16 @@ class BaseTask:
     def reset(self):
         """Reset all robots"""
         self.reset_idx(torch.arange(self.num_envs, device=self.device))
-        obs, _, _, _, _, _, _ = self.step(
+        ret = self.step(
             torch.zeros(
                 self.num_envs, self.num_actions, device=self.device, requires_grad=False
             )
         )
+        # Support envs that return extra values (e.g., heightmaps)
+        if isinstance(ret, (list, tuple)):
+            obs = ret[0]
+        else:
+            obs = ret
         return obs
 
     def step(self, actions):

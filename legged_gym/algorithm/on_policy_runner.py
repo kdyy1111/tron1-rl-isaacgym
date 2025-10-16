@@ -41,6 +41,7 @@ import numpy as np
 from .ppo import PPO
 from .mlp_encoder import MLP_Encoder
 from .actor_critic import ActorCritic
+from .heightmap_encoder import Heightmap_Encoder
 from legged_gym.envs.vec_env import VecEnv
 
 
@@ -48,6 +49,7 @@ class OnPolicyRunner:
     def __init__(self, env: VecEnv, train_cfg, log_dir=None, device="cpu"):
         self.cfg = train_cfg["runner"]
         self.ecd_cfg = train_cfg[self.cfg["encoder_class_name"]]
+        self.hm_ecd_cfg = train_cfg[self.cfg["heightmap_encoder_class_name"]]
         self.alg_cfg = train_cfg["algorithm"]
         self.policy_cfg = train_cfg["policy"]
         self.device = device
@@ -57,15 +59,22 @@ class OnPolicyRunner:
             **self.ecd_cfg,
         ).to(self.device)
 
+        heightmap_encoder = eval(self.cfg["heightmap_encoder_class_name"])(
+            **self.hm_ecd_cfg,
+        ).to(self.device)
+
         num_critic_obs = self.env.num_critic_obs + self.env.num_commands
         if self.alg_cfg["critic_take_latent"]:
             num_critic_obs += encoder.num_output_dim
+            if heightmap_encoder.num_output_dim > 0:
+                num_critic_obs += heightmap_encoder.num_output_dim
+
+        # Calculate actor input dimensions (no heightmap for actor)
+        actor_input_dim = (self.env.num_obs + encoder.num_output_dim + self.env.num_commands)
 
         actor_critic_class = eval(self.cfg["policy_class_name"])  # ActorCritic
         actor_critic: ActorCritic = actor_critic_class(
-            self.env.num_obs
-            + encoder.num_output_dim
-            + self.env.num_commands,
+            actor_input_dim,
             num_critic_obs,
             self.env.num_actions,
             **self.policy_cfg,
@@ -75,6 +84,7 @@ class OnPolicyRunner:
         self.alg = alg_class(
             self.env.num_envs,
             encoder,
+            heightmap_encoder,
             actor_critic,
             device=self.device,
             **self.alg_cfg,
@@ -87,7 +97,7 @@ class OnPolicyRunner:
         self.alg.init_storage(
             self.env.num_envs,
             self.num_steps_per_env,
-            [self.env.num_obs],
+            [self.env.num_obs],  # Store base observations only, not actor input
             [num_critic_obs],
             [self.env.obs_history_length * self.env.num_obs],
             [self.env.num_commands],
@@ -144,6 +154,7 @@ class OnPolicyRunner:
             commands.to(self.device),
             critic_obs.to(self.device),
         )
+        # Heightmap is now included directly in critic_obs from environment
         # ???
         self.alg.actor_critic.train()  # switch to train mode (for dropout for example)
 
@@ -202,15 +213,28 @@ class OnPolicyRunner:
                 critic_obs_ = torch.cat((critic_obs, commands), dim=-1)
                 if self.alg.critic_take_latent:
                     encoder_out = self.alg.encoder.encode(obs_history)
-                    self.alg.compute_returns(
-                        torch.cat((critic_obs_, encoder_out), dim=-1)
-                    )
+                    # Add GT heightmap encoding for critic only (privileged information)
+                    if self.alg.heightmap_encoder.num_output_dim > 0:
+                        if gt_heightmap is not None:
+                            # Only use GT heightmap for critic privileged information
+                            heightmap_encoded = self.alg.heightmap_encoder.encode(gt_heightmap)
+                        else:
+                            heightmap_encoded = torch.zeros(
+                                (critic_obs_.shape[0], self.alg.heightmap_encoder.num_output_dim), 
+                                device=self.device, dtype=critic_obs_.dtype
+                            )
+                        critic_input = torch.cat((critic_obs_, encoder_out, heightmap_encoded), dim=-1)
+                    else:
+                        # No heightmap encoder - just use MLP encoder
+                        critic_input = torch.cat((critic_obs_, encoder_out), dim=-1)
+                    
+                    self.alg.compute_returns(critic_input)
                 else:
                     self.alg.compute_returns(critic_obs_)
 
             (
                 mean_value_loss,
-                mean_extra_loss,
+                mean_mlp_loss,
                 mean_surrogate_loss,
                 mean_kl,
             ) = self.alg.update()
@@ -260,7 +284,7 @@ class OnPolicyRunner:
         self.writer.add_scalar(
             "Loss/value_function", locs["mean_value_loss"], locs["it"]
         )
-        self.writer.add_scalar("Loss/encoder", locs["mean_extra_loss"], locs["it"])
+        self.writer.add_scalar("Loss/mlp_encoder", locs["mean_mlp_loss"], locs["it"])
         self.writer.add_scalar(
             "Loss/surrogate", locs["mean_surrogate_loss"], locs["it"]
         )

@@ -42,8 +42,8 @@ class WandbSummaryWriter(SummaryWriter):
             LEGGED_GYM_ROOT_DIR, "logs", cfg["experiment_name"]
         )
         wandb.init(
-            project=project,
-            entity=entity,
+            project="leggedgym_PF_Tron1A",
+            entity="kdyy1111-kwangwoon-university",
             name=cfg["exptid"],
             dir=wandb_dir,
         )
