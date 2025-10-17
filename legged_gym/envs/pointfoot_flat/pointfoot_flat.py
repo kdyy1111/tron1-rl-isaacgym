@@ -309,11 +309,11 @@ class BipedPF(BaseTask):
             ),
             dim=-1,
         )
-        # Add raw heightmap data (81 dimensions) directly to critic observations
+        # Add raw heightmap data (25 dimensions) directly to critic observations
         if hasattr(self, 'measured_heights') and self.measured_heights is not None:
             heightmap_data = self.measured_heights
         else:
-            heightmap_data = torch.zeros((self.num_envs, 81), device=self.device, dtype=torch.float32)
+            heightmap_data = torch.zeros((self.num_envs, 25), device=self.device, dtype=torch.float32)
         
         # Safe access to base_lin_vel and obs_scales
         if hasattr(self, 'base_lin_vel') and hasattr(self, 'obs_scales') and hasattr(self.obs_scales, 'lin_vel'):

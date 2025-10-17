@@ -37,8 +37,8 @@ class BipedCfgPF(BaseConfig):
     class env:
         num_envs = 8192
         num_observations = 30  # Base observations (actual actor input: 30+3+3=36 with encoders, no heightmap)
-        num_critic_observations = 3 + num_observations + 81  # Base critic obs: base_lin_vel(3) + obs_buf(30) + raw_heightmap(81) = 114, + commands(3) + encoder_out(3) = 120
-        num_height_samples = 81
+        num_critic_observations = 3 + num_observations + 25  # Base critic obs: base_lin_vel(3) + obs_buf(30) + raw_heightmap(81) = 114, + commands(3) + encoder_out(3) = 120
+        num_height_samples = 25
         num_actions = 6
         env_spacing = 3.0  # not used with heightfields/trimeshes
         send_timeouts = True  # send time out information to the algorithm
@@ -60,17 +60,13 @@ class BipedCfgPF(BaseConfig):
         measure_heights = True  # Enable heightmap measurement for heightmap encoder
         critic_measure_heights = True
         measured_points_x = [
-            -0.4,
-            -0.3,
             -0.2,
             -0.1,
             0.0,
             0.1,
             0.2,
-            0.3,
-            0.4,
         ]  # Reduced by removing front/back 2 points each (9 points total)
-        measured_points_y = [-0.4, -0.3, -0.2, -0.1, 0.0, 0.1, 0.2, 0.3, 0.4]
+        measured_points_y = [-0.2, -0.1, 0.0, 0.1, 0.2]
         selected = False  # select a unique terrain type and pass all arguments
         terrain_kwargs = None  # Dict of arguments for selected terrain
         max_init_terrain_level = 5 + 4  # starting curriculum state
