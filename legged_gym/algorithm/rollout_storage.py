@@ -47,6 +47,7 @@ class RolloutStorage:
             self.action_mean = None
             self.action_sigma = None
             self.hidden_states = None
+            self.gt_heightmap = None
 
         def clear(self):
             self.__init__()
@@ -128,6 +129,9 @@ class RolloutStorage:
 
         self.step = 0
 
+        # Optional: GT heightmaps buffer (allocated lazily on first add)
+        self.gt_heightmaps = None
+
     def add_transitions(self, transition: Transition):
         if self.step >= self.num_transitions_per_env:
             raise AssertionError("Rollout buffer overflow")
@@ -144,6 +148,15 @@ class RolloutStorage:
         self.actions_log_prob[self.step].copy_(transition.actions_log_prob.view(-1, 1))
         self.mu[self.step].copy_(transition.action_mean)
         self.sigma[self.step].copy_(transition.action_sigma)
+        # Allocate and save GT heightmaps if provided
+        if transition.gt_heightmap is not None:
+            if self.gt_heightmaps is None:
+                # infer height dimension from first sample
+                height_dim = transition.gt_heightmap.shape[-1]
+                self.gt_heightmaps = torch.zeros(
+                    self.num_transitions_per_env, self.num_envs, height_dim, device=self.device
+                )
+            self.gt_heightmaps[self.step].copy_(transition.gt_heightmap)
         self._save_hidden_states(transition.hidden_states)
         self.step += 1
 
@@ -284,7 +297,14 @@ class RolloutStorage:
                 group_old_sigma_batch = group_old_sigma[group_batch_idx]
                 old_sigma_batch = group_old_sigma_batch
 
-                yield obs_batch, critic_obs_batch, obs_history_batch, group_obs_history_batch, group_commands_batch, actions_batch, target_values_batch, advantages_batch, returns_batch, old_actions_log_prob_batch, old_mu_batch, old_sigma_batch,
+                # Prepare optional gt heightmap batch if available
+                if self.gt_heightmaps is not None:
+                    group_gt_heightmaps = self.gt_heightmaps[:, group_group_idx, :].flatten(0, 1)
+                    gt_heightmap_batch = group_gt_heightmaps[group_batch_idx]
+                else:
+                    gt_heightmap_batch = None
+
+                yield obs_batch, critic_obs_batch, obs_history_batch, group_obs_history_batch, group_commands_batch, actions_batch, target_values_batch, advantages_batch, returns_batch, old_actions_log_prob_batch, old_mu_batch, old_sigma_batch, gt_heightmap_batch
 
     def encoder_mini_batch_generator(self, num_mini_batches, num_epochs=8):
         batch_size = self.num_envs * self.num_transitions_per_env

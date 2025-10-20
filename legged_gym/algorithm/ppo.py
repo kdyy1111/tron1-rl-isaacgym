@@ -183,6 +183,8 @@ class PPO:
         self.transition.critic_obs = critic_obs
         self.transition.observation_history = obs_history
         self.transition.commands = commands
+        # store gt heightmap for auxiliary losses
+        self.transition.gt_heightmap = gt_heightmap
         return self.transition.actions
 
     def process_env_step(self, rewards, dones, infos, next_obs=None):
@@ -228,6 +230,7 @@ class PPO:
             old_actions_log_prob_batch,
             old_mu_batch,
             old_sigma_batch,
+            *maybe_extra,
         ) in generator:
             encoder_out_batch = self.encoder.encode(obs_history_batch)
             commands_batch = group_commands_batch
@@ -307,6 +310,15 @@ class PPO:
                 + self.value_loss_coef * value_loss
                 - self.entropy_coef * entropy_batch_mean
             )
+
+            # Autoencoder reconstruction auxiliary loss (if GT heightmap batch is provided)
+            if self.heightmap_encoder.num_output_dim > 0 and len(maybe_extra) > 0:
+                gt_heightmap_batch = maybe_extra[-1]
+                if gt_heightmap_batch is not None:
+                    z = self.heightmap_encoder.encode(gt_heightmap_batch)
+                    x_hat = self.heightmap_encoder.decode(z)
+                    recon_loss = nn.functional.mse_loss(x_hat, gt_heightmap_batch)
+                    loss = loss + 0.1 * recon_loss
 
             if self.anneal_lr:
                 frac = 1.0 - num_updates / (

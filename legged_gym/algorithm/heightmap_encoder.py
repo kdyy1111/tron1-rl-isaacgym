@@ -87,9 +87,21 @@ class HeightmapEncoder(nn.Module):
                         torch.nn.init.constant_(encoder_layers[-1].bias, 0.0)
                     encoder_layers.append(activation)
             self.encoder = nn.Sequential(*encoder_layers)
+            # Decoder for autoencoder auxiliary loss
+            decoder_layers = []
+            decoder_layers.append(nn.Linear(num_output_dim, hidden_dims[-1]))
+            decoder_layers.append(activation)
+            for l in reversed(range(len(hidden_dims))):
+                if l == 0:
+                    decoder_layers.append(nn.Linear(hidden_dims[l], self.num_input_dim))
+                else:
+                    decoder_layers.append(nn.Linear(hidden_dims[l], hidden_dims[l - 1]))
+                    decoder_layers.append(activation)
+            self.decoder = nn.Sequential(*decoder_layers)
         else:
             # Disabled encoder - create dummy network
             self.encoder = nn.Identity()
+            self.decoder = nn.Identity()
 
         print(f"HeightmapEncoder MLP: {self.encoder}")
 
@@ -115,16 +127,18 @@ class HeightmapEncoder(nn.Module):
         else:
             return self.encoder_out
     
-    def _normalize_input(self, input):
-        """Simple normalization for GT heightmap data"""
-        # Simple normalization for clean GT data
-        mean = input.mean()
-        std = input.std() + 1e-6
+    # def _normalize_input(self, input):
+    #     """Simple normalization for GT heightmap data"""
+    #     # Simple normalization for clean GT data
+    #     mean = input.mean()
+    #     std = input.std() + 1e-6
         
-        normalized = (input - mean) / std
-        # Gentle clamping to preserve GT information
-        normalized = torch.clamp(normalized, -3.0, 3.0)
-        return normalized
+    #     normalized = (input - mean) / std
+    #     # Gentle clamping to preserve GT information
+    #     normalized = torch.clamp(normalized, -3.0, 3.0)
+    #     return normalized
+    def _normalize_input(self, input):
+        return input
 
     def get_encoder_out(self):
         return self.encoder_out
@@ -132,6 +146,15 @@ class HeightmapEncoder(nn.Module):
     def inference(self, input):
         with torch.no_grad():
             return self.encoder(input)
+    
+    # Auxiliary helpers for autoencoder
+    def decode(self, z):
+        return self.decoder(z)
+
+    def forward_aux(self, input):
+        z = self.encode(input)
+        x_hat = self.decode(z)
+        return z, x_hat
     
 
 
