@@ -309,11 +309,8 @@ class BipedPF(BaseTask):
             ),
             dim=-1,
         )
-        # Add raw heightmap data (25 dimensions) directly to critic observations
-        if hasattr(self, 'measured_heights') and self.measured_heights is not None:
-            heightmap_data = self.measured_heights
-        else:
-            heightmap_data = torch.zeros((self.num_envs, 25), device=self.device, dtype=torch.float32)
+        # Do NOT add raw heightmap data here; critic will consume encoder latent via PPO
+        heightmap_data = torch.empty((self.num_envs, 0), device=self.device, dtype=torch.float32)
         
         # Safe access to base_lin_vel and obs_scales
         if hasattr(self, 'base_lin_vel') and hasattr(self, 'obs_scales') and hasattr(self.obs_scales, 'lin_vel'):

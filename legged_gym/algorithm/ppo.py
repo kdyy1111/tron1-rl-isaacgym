@@ -84,24 +84,21 @@ class PPO:
 
         self.encoder = encoder
         self.heightmap_encoder = heightmap_encoder
-        self.current_heightmaps = None  # Store current noisy heightmaps
-        self.current_gt_heightmaps = None  # Store current GT heightmaps
 
         # PPO components
         self.actor_critic = actor_critic
         self.actor_critic.to(self.device)
         self.storage = None  # initialized later
-        self.optimizer = optim.Adam([{"params": self.actor_critic.parameters()}], lr=learning_rate)
-
-        # Setup optimizers for encoders
-        encoder_params = []
-        if self.encoder.num_output_dim != 0:
-            encoder_params.extend(self.encoder.parameters())
-        if self.heightmap_encoder.num_output_dim != 0:
-            encoder_params.extend(self.heightmap_encoder.parameters())
         
-        if encoder_params:
-            self.extra_optimizer = optim.Adam(encoder_params, lr=est_learning_rate)
+        # PPO optimizer for actor-critic and heightmap encoder
+        all_params = list(self.actor_critic.parameters())
+        if self.heightmap_encoder.num_output_dim > 0:
+            all_params.extend(self.heightmap_encoder.parameters())
+        self.optimizer = optim.Adam(all_params, lr=learning_rate)
+
+        # Extra optimizer for MLP encoder (separate learning)
+        if self.encoder.num_output_dim != 0:
+            self.extra_optimizer = optim.Adam(self.encoder.parameters(), lr=est_learning_rate)
         else:
             self.extra_optimizer = None
             
@@ -150,22 +147,9 @@ class PPO:
         # act
         encoder_out = self.encoder.encode(obs_history)
         
-        # Store heightmaps for different purposes
-        self.current_heightmaps = heightmap  # Noisy heightmap for actor
-        self.current_gt_heightmaps = gt_heightmap  # GT heightmap for critic
         
-        # Encode noisy heightmap for actor; if missing, use zeros to keep input dim consistent
-        if self.heightmap_encoder.num_output_dim > 0:
-            if heightmap is not None:
-                heightmap_encoded = self.heightmap_encoder.encode(heightmap)
-            else:
-                heightmap_encoded = torch.zeros(
-                    (obs.shape[0], self.heightmap_encoder.num_output_dim), device=self.device, dtype=obs.dtype
-                )
-            actor_input = torch.cat((encoder_out, obs, commands, heightmap_encoded), dim=-1)
-        else:
-            # No heightmap encoder - original behavior
-            actor_input = torch.cat((encoder_out, obs, commands), dim=-1)
+        # Actor input: no heightmap (privileged information)
+        actor_input = torch.cat((encoder_out, obs, commands), dim=-1)
             
         self.transition.actions = self.actor_critic.act(actor_input).detach()
 
@@ -248,22 +232,11 @@ class PPO:
             encoder_out_batch = self.encoder.encode(obs_history_batch)
             commands_batch = group_commands_batch
             
-            # Add heightmap encoding for actor (use zeros since heightmap is not available in update)
-            if self.heightmap_encoder.num_output_dim > 0:
-                heightmap_encoded_batch = torch.zeros(
-                    (obs_batch.shape[0], self.heightmap_encoder.num_output_dim), 
-                    device=self.device, dtype=obs_batch.dtype
-                )
-                actor_input_batch = torch.cat(
-                    (encoder_out_batch, obs_batch, commands_batch, heightmap_encoded_batch),
-                    dim=-1,
-                )
-            else:
-                # No heightmap encoder - original behavior
-                actor_input_batch = torch.cat(
-                    (encoder_out_batch, obs_batch, commands_batch),
-                    dim=-1,
-                )
+            # Actor input: no heightmap (privileged information)
+            actor_input_batch = torch.cat(
+                (encoder_out_batch, obs_batch, commands_batch),
+                dim=-1,
+            )
             
             self.actor_critic.act(actor_input_batch)
 
@@ -345,7 +318,11 @@ class PPO:
             self.optimizer.zero_grad()
             loss.backward()
             
-            nn.utils.clip_grad_norm_(self.actor_critic.parameters(), self.max_grad_norm)
+            # Gradient clipping for all parameters
+            all_params = list(self.actor_critic.parameters())
+            if self.heightmap_encoder.num_output_dim > 0:
+                all_params.extend(self.heightmap_encoder.parameters())
+            nn.utils.clip_grad_norm_(all_params, self.max_grad_norm)
             self.optimizer.step()
 
             num_updates += 1
@@ -353,9 +330,9 @@ class PPO:
             mean_surrogate_loss += surrogate_loss.item()
             mean_kl += kl_mean.item()
 
+        # MLP Encoder learning (separate from PPO)
         num_updates_extra = 0
         mean_mlp_loss = 0
-        mean_heightmap_loss = 0
         if self.extra_optimizer is not None:
             generator = self.storage.encoder_mini_batch_generator(
                 self.num_mini_batches, self.num_learning_epochs
@@ -382,42 +359,10 @@ class PPO:
                         nn.utils.clip_grad_norm_(self.encoder.parameters(), self.max_grad_norm)
                     self.extra_optimizer.step()
 
-                # Heightmap Encoder loss: noisy vs GT compressed output (단독)
-                heightmap_loss = torch.tensor(0.0, device=self.device)
-                if (self.heightmap_encoder.num_output_dim > 0 and 
-                    hasattr(self, 'current_heightmaps') and 
-                    hasattr(self, 'current_gt_heightmaps') and
-                    self.current_heightmaps is not None and 
-                    self.current_gt_heightmaps is not None):
-                    # Sample a subset for memory efficiency
-                    batch_size = min(self.current_heightmaps.shape[0], 256)
-                    if self.current_heightmaps.shape[0] > batch_size:
-                        indices = torch.randperm(self.current_heightmaps.shape[0])[:batch_size]
-                        noisy_sample = self.current_heightmaps[indices]
-                        gt_sample = self.current_gt_heightmaps[indices]
-                    else:
-                        noisy_sample = self.current_heightmaps
-                        gt_sample = self.current_gt_heightmaps
-                    
-                    # Encode both noisy and GT heightmaps
-                    noisy_encoded = self.heightmap_encoder.encode(noisy_sample)
-                    gt_encoded = self.heightmap_encoder.encode(gt_sample)
-                    
-                    # Compute MSE loss between compressed representations
-                    heightmap_loss = nn.functional.mse_loss(noisy_encoded, gt_encoded)
-                    
-                    # Heightmap Encoder 학습 (단독)
-                    self.extra_optimizer.zero_grad()
-                    heightmap_loss.backward()
-                    if hasattr(self.heightmap_encoder, 'parameters'):
-                        nn.utils.clip_grad_norm_(self.heightmap_encoder.parameters(), self.max_grad_norm)
-                    self.extra_optimizer.step()
-
                 num_updates_extra += 1
                 mean_mlp_loss += mlp_loss.item()
-                mean_heightmap_loss += heightmap_loss.item()
 
-        # Prevent division by zero
+        # Average losses
         if num_updates > 0:
             mean_value_loss /= num_updates
             mean_surrogate_loss /= num_updates
@@ -430,11 +375,9 @@ class PPO:
             
         if num_updates_extra > 0:
             mean_mlp_loss /= num_updates_extra
-            mean_heightmap_loss /= num_updates_extra
         else:
             mean_mlp_loss = 0.0
-            mean_heightmap_loss = 0.0
             
         self.storage.clear()
 
-        return (mean_value_loss, mean_mlp_loss, mean_heightmap_loss, mean_surrogate_loss, mean_kl)
+        return (mean_value_loss, mean_mlp_loss, mean_surrogate_loss, mean_kl)

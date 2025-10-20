@@ -36,9 +36,9 @@ robot_type = os.getenv("ROBOT_TYPE")
 class BipedCfgPF(BaseConfig):
     class env:
         num_envs = 8192
-        num_observations = 30  # Base observations (actual actor input: 30+3+3=36 with encoders, no heightmap)
-        num_critic_observations = 3 + num_observations + 25  # Base critic obs: base_lin_vel(3) + obs_buf(30) + raw_heightmap(81) = 114, + commands(3) + encoder_out(3) = 120
-        num_height_samples = 25
+        num_observations = 30  # Base observations (actual actor input: 30+3+3=36 with encoders)
+        num_critic_observations = 3 + num_observations  # base_lin_vel(3) + obs_buf(30) = 33 (heightmap latent added later)
+        num_height_samples = 81
         num_actions = 6
         env_spacing = 3.0  # not used with heightfields/trimeshes
         send_timeouts = True  # send time out information to the algorithm
@@ -60,13 +60,17 @@ class BipedCfgPF(BaseConfig):
         measure_heights = True  # Enable heightmap measurement for heightmap encoder
         critic_measure_heights = True
         measured_points_x = [
+            -0.4,
+            -0.3,
             -0.2,
             -0.1,
             0.0,
             0.1,
             0.2,
-        ]  # Reduced by removing front/back 2 points each (9 points total)
-        measured_points_y = [-0.2, -0.1, 0.0, 0.1, 0.2]
+            0.3,
+            0.4,
+        ]  # 9 points (for 9x9 = 81 samples)
+        measured_points_y = [-0.4, -0.3, -0.2, -0.1, 0.0, 0.1, 0.2, 0.3, 0.4]
         selected = False  # select a unique terrain type and pass all arguments
         terrain_kwargs = None  # Dict of arguments for selected terrain
         max_init_terrain_level = 5 + 4  # starting curriculum state
@@ -333,14 +337,13 @@ class BipedCfgPPOPF(BaseConfig):
         orthogonal_init = False
 
     class Heightmap_Encoder:
-        output_detach = True  # Keep original design - independent encoder learning
-        num_input_dim = 81  # Use reduced measured_points (9x9=81) from base_task
-        num_output_dim = 0  # Disabled - use raw heightmap directly
-        hidden_dims = [256, 128]  # Network for GT heightmap compression
+        output_detach = False  # PPO와 연결하여 학습
+        num_input_dim = 81  # 9x9 raw heightmap samples
+        num_output_dim = 25  # compress to 25-d latent
+        hidden_dims = [256, 128]
         activation = "elu"
         orthogonal_init = False
-        # Note: Encoder disabled - raw 81-dim heightmap will be used directly
-        # No noise parameters needed since we only use clean GT data
+        # Encoder enabled: critic will consume latent via PPO act()
 
     class policy:
         init_noise_std = 1.0
