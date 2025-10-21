@@ -90,17 +90,20 @@ class PPO:
         self.actor_critic.to(self.device)
         self.storage = None  # initialized later
         
-        # PPO optimizer for actor-critic and heightmap encoder
-        all_params = list(self.actor_critic.parameters())
-        if self.heightmap_encoder.num_output_dim > 0:
-            all_params.extend(self.heightmap_encoder.parameters())
-        self.optimizer = optim.Adam(all_params, lr=learning_rate)
+        # PPO optimizer for actor-critic only
+        self.optimizer = optim.Adam(self.actor_critic.parameters(), lr=learning_rate)
 
         # Extra optimizer for MLP encoder (separate learning)
         if self.encoder.num_output_dim != 0:
             self.extra_optimizer = optim.Adam(self.encoder.parameters(), lr=est_learning_rate)
         else:
             self.extra_optimizer = None
+            
+        # Heightmap encoder optimizer (separate learning)
+        if self.heightmap_encoder.num_output_dim > 0:
+            self.heightmap_optimizer = optim.Adam(self.heightmap_encoder.parameters(), lr=est_learning_rate)
+        else:
+            self.heightmap_optimizer = None
             
         self.transition = RolloutStorage.Transition()
 
@@ -311,14 +314,7 @@ class PPO:
                 - self.entropy_coef * entropy_batch_mean
             )
 
-            # Autoencoder reconstruction auxiliary loss (if GT heightmap batch is provided)
-            if self.heightmap_encoder.num_output_dim > 0 and len(maybe_extra) > 0:
-                gt_heightmap_batch = maybe_extra[-1]
-                if gt_heightmap_batch is not None:
-                    z = self.heightmap_encoder.encode(gt_heightmap_batch)
-                    x_hat = self.heightmap_encoder.decode(z)
-                    recon_loss = nn.functional.mse_loss(x_hat, gt_heightmap_batch)
-                    loss = loss + 0.1 * recon_loss
+            # Note: Heightmap encoder autoencoder loss is handled separately
 
             if self.anneal_lr:
                 frac = 1.0 - num_updates / (
@@ -330,11 +326,8 @@ class PPO:
             self.optimizer.zero_grad()
             loss.backward()
             
-            # Gradient clipping for all parameters
-            all_params = list(self.actor_critic.parameters())
-            if self.heightmap_encoder.num_output_dim > 0:
-                all_params.extend(self.heightmap_encoder.parameters())
-            nn.utils.clip_grad_norm_(all_params, self.max_grad_norm)
+            # Gradient clipping for actor-critic parameters only
+            nn.utils.clip_grad_norm_(self.actor_critic.parameters(), self.max_grad_norm)
             self.optimizer.step()
 
             num_updates += 1
@@ -374,6 +367,46 @@ class PPO:
                 num_updates_extra += 1
                 mean_mlp_loss += mlp_loss.item()
 
+        # Heightmap Encoder learning (separate from PPO)
+        num_updates_heightmap = 0
+        mean_heightmap_recon_loss = 0
+        if self.heightmap_optimizer is not None:
+            generator = self.storage.mini_batch_generator(
+                self.num_group,
+                self.num_mini_batches,
+                self.num_learning_epochs,
+            )
+            for (
+                obs_batch,
+                critic_obs_batch,
+                obs_history_batch, _,
+                group_commands_batch,
+                actions_batch,
+                target_values_batch,
+                advantages_batch,
+                returns_batch,
+                old_actions_log_prob_batch,
+                old_mu_batch,
+                old_sigma_batch,
+                *maybe_extra,
+            ) in generator:
+                # Heightmap Encoder autoencoder loss
+                if len(maybe_extra) > 0:
+                    gt_heightmap_batch = maybe_extra[-1]
+                    if gt_heightmap_batch is not None and gt_heightmap_batch.shape[0] > 0:
+                        z = self.heightmap_encoder.encode(gt_heightmap_batch)
+                        x_hat = self.heightmap_encoder.decode(z)
+                        recon_loss = nn.functional.mse_loss(x_hat, gt_heightmap_batch)
+                        
+                        # Heightmap Encoder 학습 (단독)
+                        self.heightmap_optimizer.zero_grad()
+                        recon_loss.backward()
+                        nn.utils.clip_grad_norm_(self.heightmap_encoder.parameters(), self.max_grad_norm)
+                        self.heightmap_optimizer.step()
+                        
+                        num_updates_heightmap += 1
+                        mean_heightmap_recon_loss += recon_loss.item()
+
         # Average losses
         if num_updates > 0:
             mean_value_loss /= num_updates
@@ -390,6 +423,11 @@ class PPO:
         else:
             mean_mlp_loss = 0.0
             
+        if num_updates_heightmap > 0:
+            mean_heightmap_recon_loss /= num_updates_heightmap
+        else:
+            mean_heightmap_recon_loss = 0.0
+            
         self.storage.clear()
 
-        return (mean_value_loss, mean_mlp_loss, mean_surrogate_loss, mean_kl)
+        return (mean_value_loss, mean_mlp_loss, mean_heightmap_recon_loss, mean_surrogate_loss, mean_kl)

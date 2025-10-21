@@ -337,13 +337,13 @@ class BipedCfgPPOPF(BaseConfig):
         orthogonal_init = False
 
     class Heightmap_Encoder:
-        output_detach = False  # PPO와 연결하여 학습
+        output_detach = True  # 별도 학습 (MLP_Encoder와 동일)
         num_input_dim = 81  # 9x9 raw heightmap samples
         num_output_dim = 25  # compress to 25-d latent
-        hidden_dims = [256, 128]
+        hidden_dims = [64, 32] #[256, 128]
         activation = "elu"
         orthogonal_init = False
-        # Encoder enabled: critic will consume latent via PPO act()
+        # Encoder enabled: 별도 옵티마이저로 학습
 
     class policy:
         init_noise_std = 1.0

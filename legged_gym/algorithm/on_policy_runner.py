@@ -174,12 +174,15 @@ class OnPolicyRunner:
             start = time.time()
             # Rollout
             with torch.inference_mode():
+                # Get initial GT heightmap before first iteration
+                gt_heightmap = self.env.get_gt_heightmap() if hasattr(self.env, 'get_gt_heightmap') else None
                 for i in range(self.num_steps_per_env):
-                    actions = self.alg.act(obs, obs_history, commands, critic_obs, gt_heightmap)
+                    # Get GT heightmap before act() call
+                    gt_heightmap = self.env.get_gt_heightmap() if hasattr(self.env, 'get_gt_heightmap') else None
+                    
+                    actions = self.alg.act(obs, obs_history, commands, critic_obs, heightmap=None, gt_heightmap=gt_heightmap)
                     # add critic_obs_buf to step returns, make sure it updates in every for loop
                     (obs, rewards, dones, infos, obs_history, commands, critic_obs_buf) = self.env.step(actions)
-                    # Get GT heightmap separately for critic privileged information
-                    gt_heightmap = self.env.get_gt_heightmap() if hasattr(self.env, 'get_gt_heightmap') else None
                     # critic_obs = obs
                     obs, obs_history, commands, critic_obs, rewards, dones = (
                         obs.to(self.device),
@@ -238,6 +241,7 @@ class OnPolicyRunner:
             (
                 mean_value_loss,
                 mean_mlp_loss,
+                mean_heightmap_recon_loss,
                 mean_surrogate_loss,
                 mean_kl,
             ) = self.alg.update()
@@ -288,6 +292,7 @@ class OnPolicyRunner:
             "Loss/value_function", locs["mean_value_loss"], locs["it"]
         )
         self.writer.add_scalar("Loss/mlp_encoder", locs["mean_mlp_loss"], locs["it"])
+        self.writer.add_scalar("Loss/heightmap_recon", locs["mean_heightmap_recon_loss"], locs["it"])
         self.writer.add_scalar(
             "Loss/surrogate", locs["mean_surrogate_loss"], locs["it"]
         )
