@@ -69,8 +69,10 @@ class OnPolicyRunner:
             if heightmap_encoder.num_output_dim > 0:
                 num_critic_obs += heightmap_encoder.num_output_dim
 
-        # Calculate actor input dimensions (no heightmap for actor - privileged information)
+        # Calculate actor input dimensions (include heightmap latent for actor)
         actor_input_dim = (self.env.num_obs + encoder.num_output_dim + self.env.num_commands)
+        if heightmap_encoder.num_output_dim > 0:
+            actor_input_dim += heightmap_encoder.num_output_dim
 
         actor_critic_class = eval(self.cfg["policy_class_name"])  # ActorCritic
         actor_critic: ActorCritic = actor_critic_class(

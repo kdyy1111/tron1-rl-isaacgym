@@ -150,25 +150,32 @@ class PPO:
         # act
         encoder_out = self.encoder.encode(obs_history)
         
+        # Generate heightmap latent for both actor and critic
+        if self.heightmap_encoder.num_output_dim > 0:
+            if gt_heightmap is not None and getattr(self, 'critic_use_gt_heightmap', True):
+                heightmap_latent = self.heightmap_encoder.encode(gt_heightmap)
+            elif heightmap is not None:
+                heightmap_latent = self.heightmap_encoder.encode(heightmap)
+            else:
+                heightmap_latent = torch.zeros(
+                    (obs.shape[0], self.heightmap_encoder.num_output_dim), device=self.device, dtype=obs.dtype
+                )
+        else:
+            heightmap_latent = None
         
-        # Actor input: no heightmap (privileged information)
-        actor_input = torch.cat((encoder_out, obs, commands), dim=-1)
+        # Actor input: include heightmap latent
+        if heightmap_latent is not None:
+            actor_input = torch.cat((encoder_out, obs, commands, heightmap_latent), dim=-1)
+        else:
+            actor_input = torch.cat((encoder_out, obs, commands), dim=-1)
             
         self.transition.actions = self.actor_critic.act(actor_input).detach()
 
         # evaluate with GT heightmap for critic
         if self.critic_take_latent:
             if self.heightmap_encoder.num_output_dim > 0:
-                if gt_heightmap is not None and getattr(self, 'critic_use_gt_heightmap', True):
-                    gt_heightmap_encoded = self.heightmap_encoder.encode(gt_heightmap)
-                    critic_latent = gt_heightmap_encoded
-                elif heightmap is not None:
-                    critic_latent = self.heightmap_encoder.encode(heightmap)
-                else:
-                    critic_latent = torch.zeros(
-                        (critic_obs.shape[0], self.heightmap_encoder.num_output_dim), device=self.device, dtype=critic_obs.dtype
-                    )
-                critic_obs = torch.cat((critic_obs, encoder_out, critic_latent), dim=-1)
+                # Use the same heightmap_latent generated above
+                critic_obs = torch.cat((critic_obs, encoder_out, heightmap_latent), dim=-1)
             else:
                 # Heightmap encoder disabled - critic_obs already contains heightmap from environment
                 # Just add encoder output
@@ -238,11 +245,30 @@ class PPO:
             encoder_out_batch = self.encoder.encode(obs_history_batch)
             commands_batch = group_commands_batch
             
-            # Actor input: no heightmap (privileged information)
-            actor_input_batch = torch.cat(
-                (encoder_out_batch, obs_batch, commands_batch),
-                dim=-1,
-            )
+            # Generate heightmap latent for actor
+            if self.heightmap_encoder.num_output_dim > 0 and len(maybe_extra) > 0:
+                gt_heightmap_batch = maybe_extra[-1]
+                if gt_heightmap_batch is not None and gt_heightmap_batch.shape[0] > 0:
+                    heightmap_latent_batch = self.heightmap_encoder.encode(gt_heightmap_batch)
+                else:
+                    heightmap_latent_batch = torch.zeros(
+                        (obs_batch.shape[0], self.heightmap_encoder.num_output_dim), 
+                        device=self.device, dtype=obs_batch.dtype
+                    )
+            else:
+                heightmap_latent_batch = None
+            
+            # Actor input: include heightmap latent
+            if heightmap_latent_batch is not None:
+                actor_input_batch = torch.cat(
+                    (encoder_out_batch, obs_batch, commands_batch, heightmap_latent_batch),
+                    dim=-1,
+                )
+            else:
+                actor_input_batch = torch.cat(
+                    (encoder_out_batch, obs_batch, commands_batch),
+                    dim=-1,
+                )
             
             self.actor_critic.act(actor_input_batch)
 
