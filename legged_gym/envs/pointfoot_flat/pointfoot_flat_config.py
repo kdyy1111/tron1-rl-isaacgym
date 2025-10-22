@@ -250,6 +250,8 @@ class BipedCfgPF(BaseConfig):
             foot_landing_vel = -0.15
             tracking_contacts_shaped_force = -2
             tracking_contacts_shaped_vel = -2
+            obstacle_avoidance = 20.0
+            foot_clearance = 3.0
 
         only_positive_rewards = False  # if true negative total rewards are clipped at zero (avoids early termination problems)
         clip_reward = 100
@@ -271,6 +273,8 @@ class BipedCfgPF(BaseConfig):
         gait_force_sigma = 25.0
         gait_vel_sigma = 0.25
         gait_height_sigma = 0.005
+        obstacle_force_threshold = 10.0  # xy축 접촉력 임계치 (N)
+        foot_clearance_target = 0.15  # 발 목표 높이 (m)
 
     class normalization:
         class obs_scales:
