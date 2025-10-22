@@ -436,3 +436,68 @@ class BipedPF(BaseTask):
         landing_z_vels = torch.where(about_to_land, z_vels, torch.zeros_like(z_vels))
         reward = torch.sum(torch.square(landing_z_vels), dim=1)
         return reward
+
+    def _reward_obstacle_avoidance(self):
+        """
+        발의 xy축 방향 접촉력이 임계치를 넘으면 발을 위로 들어올려서 험지를 극복하도록 하는 리워드
+        """
+        # 발의 접촉력 (xy축만)
+        foot_xy_forces = torch.norm(self.contact_forces[:, self.feet_indices, :2], dim=-1)  # [num_envs, num_feet]
+        
+        # 임계치 설정
+        force_threshold = self.cfg.rewards.obstacle_force_threshold
+        
+        # 발이 접촉 중인지 확인 (z축 접촉력 > 0.1)
+        foot_contacts = self.contact_forces[:, self.feet_indices, 2] > 0.1  # [num_envs, num_feet]
+        
+        # xy축 접촉력이 임계치를 넘는 발들
+        high_xy_forces = foot_xy_forces > force_threshold  # [num_envs, num_feet]
+        
+        # 접촉 중이면서 xy축 접촉력이 높은 발들
+        problematic_feet = foot_contacts & high_xy_forces  # [num_envs, num_feet]
+        
+        # 발의 z축 속도 (위로 올라가는 것이 양수)
+        foot_z_velocities = self.foot_velocities[:, :, 2]  # [num_envs, num_feet]
+        
+        # 문제가 있는 발들에 대해 z축 속도가 양수(위로 올라감)일 때 보상
+        # 위로 올라가는 속도가 클수록 더 큰 보상
+        reward = torch.zeros(self.num_envs, device=self.device)
+        
+        for i in range(len(self.feet_indices)):
+            # 문제가 있는 발이 위로 올라가면 보상
+            upward_movement = torch.where(
+                problematic_feet[:, i] & (foot_z_velocities[:, i] > 0),
+                foot_z_velocities[:, i],  # 위로 올라가는 속도만큼 보상
+                torch.zeros_like(foot_z_velocities[:, i])
+            )
+            reward += upward_movement
+        
+        return reward
+
+    def _reward_foot_clearance(self):
+        """
+        발이 지면에서 충분히 높이 올라가도록 하는 리워드
+        발 높이가 목표 높이보다 높으면 보상
+        """
+        # 발 높이 (foot_heights는 이미 계산되어 있음)
+        foot_heights = self.foot_heights  # [num_envs, num_feet]
+        
+        # 목표 높이
+        target_height = self.cfg.rewards.foot_clearance_target
+        
+        # 발이 접촉 중이 아닐 때만 높이 보상 (접촉 중이면 높이 보상 없음)
+        foot_contacts = self.contact_forces[:, self.feet_indices, 2] > 0.1  # [num_envs, num_feet]
+        
+        # 접촉 중이 아닌 발들에 대해서만 높이 보상
+        height_reward = torch.where(
+            ~foot_contacts,  # 접촉 중이 아닌 발들
+            torch.clamp(foot_heights - target_height, 0, 0.1),  # 목표 높이보다 높으면 보상 (최대 0.1)
+            torch.zeros_like(foot_heights)  # 접촉 중인 발은 보상 없음
+        )
+        
+        # 모든 발의 높이 보상 합계
+        return torch.sum(height_reward, dim=1)
+
+    def _post_physics_step_callback(self):
+        """Override base class"""
+        super()._post_physics_step_callback()
