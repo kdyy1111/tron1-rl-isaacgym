@@ -306,6 +306,8 @@ class BaseTask:
 
         # save body names from the asset
         body_names = self.gym.get_asset_rigid_body_names(robot_asset)
+        # expose as attribute for downstream env-specific rewards/utilities
+        self.rigid_body_names = body_names
         self.dof_names = self.gym.get_asset_dof_names(robot_asset)
         self.num_bodies = len(body_names)
         self.num_dofs = len(self.dof_names)

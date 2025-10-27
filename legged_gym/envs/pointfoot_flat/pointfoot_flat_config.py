@@ -48,7 +48,7 @@ class BipedCfgPF(BaseConfig):
         fail_to_terminal_time_s = 0.5
 
     class terrain:
-        mesh_type = "plane"  # "heightfield" # none, plane, heightfield or trimesh
+        mesh_type = "trimesh"  # "heightfield" # none, plane, heightfield or trimesh
         horizontal_scale = 0.1  # [m]
         vertical_scale = 0.005  # [m]
         border_size = 25  # [m]
@@ -167,7 +167,24 @@ class BipedCfgPF(BaseConfig):
         # decimation: Number of control action updates @ sim DT per policy DT
         decimation = 4
         user_torque_limit = 80.0
+        
+        # Feedforward Control Parameters
+        enable_feedforward_control = True
+        feedback_gain = 0.1  # k_fb: 정책 액션 가중치 (최소 학습 허용)
+        feedforward_gain = 0.9  # k_ff: Feedforward 액션 가중치 (주도적 적용)
+        
+        # Feedforward Trajectory Parameters
+        feedforward_period = 0.6  # T = 0.6s (cosine trajectory period)
+        feedforward_amplitude = 0.6  # Feedforward 액션의 최대 크기 (증가)
+        obstacle_force_threshold = 20.0  # xy축 접촉력 임계치 (N)
+        upward_movement_threshold = 0.03  # 발이 위로 이동하는 속도 임계치 (m/s)
+        
+        # Feedforward Fade Control
+        feedforward_start_steps = 0  # Feedforward 시작 스텝 (맨 처음부터)
+        feedforward_fade_steps = 8000   # Feedforward 증가/감소 기간
         max_power = 1000.0  # [W]
+        # Debug
+        debug_feedforward = True
 
     class asset:
         file = "{}/resources/robots/{}/urdf/robot.urdf".format(LEGGED_GYM_ROOT_DIR, robot_type)
@@ -250,6 +267,9 @@ class BipedCfgPF(BaseConfig):
             foot_landing_vel = -0.15
             tracking_contacts_shaped_force = -2
             tracking_contacts_shaped_vel = -2
+            foot_clearance = 1.0
+            # penalize knees close to ground (measured height frame)
+            knee_ground = -3.0
 
         only_positive_rewards = False  # if true negative total rewards are clipped at zero (avoids early termination problems)
         clip_reward = 100
@@ -267,6 +287,14 @@ class BipedCfgPF(BaseConfig):
         min_feet_distance = 0.115
         about_landing_threshold = 0.08
         max_contact_force = 100.0  # forces above this value are penalized
+        
+        # Foot Clearance Reward Parameters
+        foot_clearance_min_height = 0.10  # h_min: 10cm
+        foot_clearance_max_height = 0.20  # h_max: 20cm
+        # foot_clearance_target_count = 2.0  # 사용하지 않음 (스윙 발 비율로 계산)
+        # Knee-ground penalty parameters (relative to measured ground)
+        knee_clearance_min = 0.08  # 8 cm
+        
         kappa_gait_probs = 0.05
         gait_force_sigma = 25.0
         gait_vel_sigma = 0.25
@@ -375,7 +403,7 @@ class BipedCfgPPOPF(BaseConfig):
         max_iterations = 15000  # number of policy updates
 
         # logging
-        logger = "tensorboard"
+        logger = "wandb"
         exptid = ""
         wandb_project = "legged_gym_PF"
         save_interval = 500  # check for potential saves every this many iterations
